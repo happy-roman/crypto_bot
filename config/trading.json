@@ -1,0 +1,12 @@
+{
+  "default_exchange": "binance",
+  "default_pair": "TAO/USDT",
+  "default_market_type": "swap",
+  "default_leverage": 2,
+  "paper_trading": true,
+  "test_balance": 50.0,
+  "fee_per_side": 0.0005,
+  "slippage": 0.0002,
+  "scan_interval_sec": 60,
+  "poll_interval_sec": 5
+}

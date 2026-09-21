@@ -1,0 +1,24 @@
+{
+  "grid": {
+    "grid_distances": [0.0, -2.0, -4.0, -5.0, -10.0],
+    "grid_volumes": [10, 10, 20, 20, 40],
+    "min_tp_pct": 0.8,
+    "rsi_10m_period": 9,
+    "rsi_10m_threshold": 40,
+    "turtle_lower_period": 200,
+    "turtle_lower_mult": 5.6,
+    "roc_4h_period": 100,
+    "roc_4h_threshold": -0.5,
+    "st_1m_period": 100,
+    "st_1m_mult": 3.0,
+    "st_15m_period": 10,
+    "st_15m_mult": 3.0,
+    "roc_1m_period": 100,
+    "roc_1m_threshold": 1.0,
+    "turtle_upper_15m_period": 200,
+    "turtle_upper_15m_mult": 5.6,
+    "macd_2m_fast": 12,
+    "macd_2m_slow": 26,
+    "macd_2m_signal": 9
+  }
+}
