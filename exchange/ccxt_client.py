@@ -26,8 +26,11 @@ class CCXTClient:
                     opts = {"defaultType": mtype}
                     if mtype == "swap":
                         opts["defaultSubType"] = "linear"
-                        # ⚡️ Только linear markets — не грузим spot, не падаем
-                        opts["fetchMarkets"] = {"types": ["linear"]}
+                        # Для BingX: только swap markets
+                        if name == "bingx":
+                            opts["fetchMarkets"] = {"types": ["swap"]}
+                        else:
+                            opts["fetchMarkets"] = {"types": ["linear"]}
                     elif mtype == "spot":
                         opts["fetchMarkets"] = {"types": ["spot"]}
 
@@ -72,8 +75,6 @@ class CCXTClient:
                 n = len(ex.markets)
                 self._loaded.add(key)
                 logger.info(f"{key} markets={n}")
-                if n == 0:
-                    logger.warning(f"{key} markets пусто — проверь сеть/VPN")
             except Exception as e:
                 logger.error(f"{key} load_markets FAILED: {type(e).__name__}: {e}")
 

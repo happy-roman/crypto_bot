@@ -1,5 +1,5 @@
 {
-  "default_exchange": "binance",
+  "default_exchange": "bingx",
   "default_pair": "TAO/USDT",
   "default_market_type": "swap",
   "default_leverage": 2,
