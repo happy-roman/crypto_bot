@@ -1,4 +1,5 @@
 # exchange/paper.py
+"""Виртуальная биржа. Реальные котировки, виртуальные ордера."""
 import logging
 import time
 
@@ -11,7 +12,8 @@ class PaperClient:
         self.real = real_client
         self.balance = float(initial_balance)
 
-    # Прокси к реальному CCXTClient
+    # ---------- Прокси к реальному клиенту ----------
+
     def get_exchange(self, name, market_type="spot"):
         return self.real.get_exchange(name, market_type)
 
@@ -27,7 +29,12 @@ class PaperClient:
     def get_ticker(self, name, symbol, market_type="spot"):
         return self.real.get_ticker(name, symbol, market_type)
 
-    # Виртуальные операции
+    # ⚡️ Прокси для прогрева markets
+    def _ensure_markets(self, name, market_type):
+        return self.real._ensure_markets(name, market_type)
+
+    # ---------- Виртуальные операции ----------
+
     def fetch_balance(self, name, market_type="spot"):
         return {"USDT": {"free": self.balance, "total": self.balance}}
 
@@ -39,11 +46,13 @@ class PaperClient:
                 logger.warning(f"[PAPER] no ticker {symbol}")
                 return None
             price = float(t["last"])
+
         notional = float(amount) * float(price)
         if side == "buy":
             self.balance -= notional
         else:
             self.balance += notional
+
         oid = f"paper_{int(time.time() * 1000)}"
         logger.info(f"[PAPER] {side.upper():4s} {amount:.6f} {symbol} "
                     f"@ {price:.6f} bal={self.balance:.2f}")
