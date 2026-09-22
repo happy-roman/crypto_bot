@@ -18,6 +18,7 @@ class WSManager:
         self.prices: Dict[str, dict] = {}
         self.callbacks: Dict[str, list] = {}
         self.tasks: Dict[str, asyncio.Task] = {}
+        self._ping_tasks: Dict[str, asyncio.Task] = {}
 
     @staticmethod
     def _key(exchange, symbol):
@@ -45,14 +46,33 @@ class WSManager:
 
     async def unsubscribe(self, exchange, symbol):
         key = self._key(exchange, symbol)
-        task = self.tasks.pop(key, None)
-        if task:
-            task.cancel()
-            try:
-                await task
-            except Exception:
-                pass
+        for tasks_dict in (self.tasks, self._ping_tasks):
+            task = tasks_dict.pop(key, None)
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except Exception:
+                    pass
         self.prices.pop(key, None)
+
+    # ---------- Proactive ping ----------
+
+    async def _ping_loop(self, key, ws):
+        """Отправляем heartbeat раз в 25 сек, пока живём."""
+        try:
+            while True:
+                await asyncio.sleep(25)
+                try:
+                    await ws.send("Ping")
+                    logger.debug(f"[WS] {key} → Ping (proactive)")
+                except Exception as e:
+                    logger.debug(f"[WS] {key} ping failed: {e}")
+                    return
+        except asyncio.CancelledError:
+            return
+
+    # ---------- Основной стрим ----------
 
     async def _run_stream(self, exchange, symbol):
         adapter = WS_ADAPTERS[exchange]
@@ -63,8 +83,8 @@ class WSManager:
         fail_streak = 0
 
         while True:
+            ping_task = None
             try:
-                # ⚡️ ping_interval=None — сервер сам шлёт ping, отвечаем вручную
                 async with websockets.connect(
                     url,
                     ping_interval=None,
@@ -76,50 +96,84 @@ class WSManager:
                     sub = adapter.subscribe_msg(symbol)
                     if sub:
                         await ws.send(json.dumps(sub))
+
                     backoff = 1
                     fail_streak = 0
                     logger.info(f"[WS] {key} подключён")
 
+                    # Запускаем proactive ping
+                    ping_task = asyncio.create_task(self._ping_loop(key, ws))
+                    self._ping_tasks[key] = ping_task
+
+                    msg_count = 0
                     async for raw in ws:
-                        # 1. Декодирование (gzip / plain)
                         text = decode(raw)
                         if not text:
                             continue
 
-                        # ⚡️ 2. BingX Ping/Pong — простой текст, не JSON
+                        # ⚡️ Логируем первые 3 сообщения для диагностики
+                        if msg_count < 3:
+                            logger.info(
+                                f"[WS] {key} raw#{msg_count}: "
+                                f"{repr(text[:120])}")
+                            msg_count += 1
+
                         stripped = text.strip()
-                        if stripped == "Ping":
-                            await ws.send("Pong")
-                            logger.debug(f"[WS] {key} → Pong")
+                        low = stripped.lower()
+
+                        # ===== 1. Plain text Ping/Pong =====
+                        if low in ("ping", "\"ping\"", "ping\n"):
+                            try:
+                                await ws.send("Pong")
+                                logger.debug(f"[WS] {key} → Pong (text)")
+                            except Exception as e:
+                                logger.warning(f"send Pong: {e}")
                             continue
-                        if stripped == "Pong":
-                            continue
-                        # На всякий случай — варианты с \n
-                        if stripped.lower() == "ping":
-                            await ws.send("Pong")
-                            continue
-                        if stripped.lower() == "pong":
+                        if low in ("pong", "\"pong\"", "pong\n"):
                             continue
 
-                        # 3. JSON
+                        # ===== 2. JSON Ping/Pong =====
                         try:
                             msg = json.loads(text)
                         except json.JSONDecodeError:
+                            # Не текст, не JSON — возможно это ping в бинарной форме
+                            logger.debug(f"[WS] {key} non-json: {text[:60]}")
+                            try:
+                                await ws.send("Pong")
+                            except Exception:
+                                pass
                             continue
 
                         if isinstance(msg, dict):
-                            # Служебные ack
+                            # JSON ping/pong
+                            if "ping" in msg:
+                                try:
+                                    await ws.send(
+                                        json.dumps({"pong": msg["ping"]}))
+                                    logger.debug(
+                                        f"[WS] {key} → Pong (json)")
+                                except Exception:
+                                    pass
+                                continue
+                            if "pong" in msg:
+                                continue
+
+                            # Подтверждение подписки
                             if msg.get("op") == "subscribe":
                                 continue
                             if msg.get("code") == 0 and "dataType" in msg:
                                 logger.debug(
-                                    f"[WS] {key} ack: {msg.get('dataType')}")
+                                    f"[WS] {key} sub-ack: "
+                                    f"{msg.get('dataType')}")
+                                continue
+                            if msg.get("success") is True:
                                 continue
 
-                        # 4. Парсинг
+                        # ===== 3. Парсинг данных =====
                         try:
                             snap = adapter.parse(msg)
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"parse error: {e}")
                             continue
                         if not snap or not snap.get("price"):
                             continue
@@ -147,11 +201,20 @@ class WSManager:
                     f"[WS] {key} ошибка ({fail_streak}/10): {e}")
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, max_backoff)
+            finally:
+                if ping_task:
+                    ping_task.cancel()
+                    try:
+                        await ping_task
+                    except Exception:
+                        pass
+                self._ping_tasks.pop(key, None)
 
     async def shutdown(self):
-        tasks = list(self.tasks.values())
-        for t in tasks:
-            t.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        self.tasks.clear()
+        for tasks_dict in (self._ping_tasks, self.tasks):
+            for t in list(tasks_dict.values()):
+                t.cancel()
+            if tasks_dict:
+                await asyncio.gather(*tasks_dict.values(),
+                                      return_exceptions=True)
+            tasks_dict.clear()
