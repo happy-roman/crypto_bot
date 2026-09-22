@@ -64,11 +64,14 @@ class WSManager:
 
         while True:
             try:
+                # ⚡️ ping_interval=None — сервер сам шлёт ping, отвечаем вручную
                 async with websockets.connect(
-                    url, ping_interval=None,  # BingX сам шлёт ping
+                    url,
+                    ping_interval=None,
                     ping_timeout=None,
                     compression=None,
-                    max_size=2 ** 23, open_timeout=15,
+                    max_size=2 ** 23,
+                    open_timeout=15,
                 ) as ws:
                     sub = adapter.subscribe_msg(symbol)
                     if sub:
@@ -78,38 +81,42 @@ class WSManager:
                     logger.info(f"[WS] {key} подключён")
 
                     async for raw in ws:
+                        # 1. Декодирование (gzip / plain)
                         text = decode(raw)
                         if not text:
                             continue
 
-                        # ⚡️ BingX ping/pong
-                        if '"ping"' in text or '"pong"' in text:
-                            try:
-                                m = json.loads(text)
-                                if "ping" in m:
-                                    await ws.send(json.dumps(
-                                        {"pong": m["ping"]}))
-                                    continue
-                                if "pong" in m:
-                                    continue
-                            except json.JSONDecodeError:
-                                pass
+                        # ⚡️ 2. BingX Ping/Pong — простой текст, не JSON
+                        stripped = text.strip()
+                        if stripped == "Ping":
+                            await ws.send("Pong")
+                            logger.debug(f"[WS] {key} → Pong")
+                            continue
+                        if stripped == "Pong":
+                            continue
+                        # На всякий случай — варианты с \n
+                        if stripped.lower() == "ping":
+                            await ws.send("Pong")
+                            continue
+                        if stripped.lower() == "pong":
+                            continue
 
+                        # 3. JSON
                         try:
                             msg = json.loads(text)
                         except json.JSONDecodeError:
                             continue
 
                         if isinstance(msg, dict):
-                            # Служебные
+                            # Служебные ack
                             if msg.get("op") == "subscribe":
                                 continue
-                            # BingX ack
                             if msg.get("code") == 0 and "dataType" in msg:
                                 logger.debug(
                                     f"[WS] {key} ack: {msg.get('dataType')}")
                                 continue
 
+                        # 4. Парсинг
                         try:
                             snap = adapter.parse(msg)
                         except Exception:
