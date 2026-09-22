@@ -1,13 +1,20 @@
+# websocket/adapters/bingx.py
+"""
+BingX WebSocket адаптер для SWAP (фьючерсы).
+Использует swap-endpoint, не spot.
+"""
 from websocket.adapters.base import BaseWSAdapter, safe_float
 
 
 def _sym(s):
+    """TAO/USDT → TAO-USDT"""
     return s.replace("/", "-")
 
 
 class BingXWS(BaseWSAdapter):
     name = "bingx"
-    URL = "wss://open-api-ws.bingx.com/market"
+    # ⚡️ Swap-endpoint, НЕ spot (open-api-ws.bingx.com/market)
+    URL = "wss://open-api-swap.bingx.com/swap-market"
 
     @staticmethod
     def build_url(symbol):
@@ -15,11 +22,15 @@ class BingXWS(BaseWSAdapter):
 
     @staticmethod
     def subscribe_msg(symbol):
-        return {"id": "sub_ticker", "reqType": "sub",
-                "dataType": f"{_sym(symbol)}@ticker"}
+        return {
+            "id": "sub_ticker",
+            "reqType": "sub",
+            "dataType": f"{_sym(symbol)}@ticker",
+        }
 
     @staticmethod
     def parse(msg):
+        # BingX отдаёт данные в поле "data", либо в корне
         d = msg.get("data") if isinstance(msg.get("data"), dict) else msg
         if not isinstance(d, dict) or "c" not in d:
             return None

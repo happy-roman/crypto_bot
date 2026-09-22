@@ -60,37 +60,65 @@ class WSManager:
         url = adapter.build_url(symbol)
         backoff = 1
         max_backoff = 60
+        fail_streak = 0
 
         while True:
             try:
                 async with websockets.connect(
-                    url, ping_interval=20, ping_timeout=10,
-                    compression=None, max_size=2 ** 23, open_timeout=15,
+                    url, ping_interval=None,  # BingX сам шлёт ping
+                    ping_timeout=None,
+                    compression=None,
+                    max_size=2 ** 23, open_timeout=15,
                 ) as ws:
                     sub = adapter.subscribe_msg(symbol)
                     if sub:
                         await ws.send(json.dumps(sub))
                     backoff = 1
+                    fail_streak = 0
                     logger.info(f"[WS] {key} подключён")
 
                     async for raw in ws:
                         text = decode(raw)
                         if not text:
                             continue
+
+                        # ⚡️ BingX ping/pong
+                        if '"ping"' in text or '"pong"' in text:
+                            try:
+                                m = json.loads(text)
+                                if "ping" in m:
+                                    await ws.send(json.dumps(
+                                        {"pong": m["ping"]}))
+                                    continue
+                                if "pong" in m:
+                                    continue
+                            except json.JSONDecodeError:
+                                pass
+
                         try:
                             msg = json.loads(text)
                         except json.JSONDecodeError:
                             continue
+
                         if isinstance(msg, dict):
+                            # Служебные
                             if msg.get("op") == "subscribe":
                                 continue
+                            # BingX ack
+                            if msg.get("code") == 0 and "dataType" in msg:
+                                logger.debug(
+                                    f"[WS] {key} ack: {msg.get('dataType')}")
+                                continue
+
                         try:
                             snap = adapter.parse(msg)
                         except Exception:
                             continue
                         if not snap or not snap.get("price"):
                             continue
+
                         self.prices[key] = snap
+
                         for cb in list(self.callbacks.get(key, [])):
                             try:
                                 res = cb(snap)
@@ -98,11 +126,18 @@ class WSManager:
                                     await res
                             except Exception as e:
                                 logger.error(f"callback {key}: {e}")
+
             except asyncio.CancelledError:
                 logger.info(f"[WS] {key} остановлен")
                 return
             except Exception as e:
-                logger.warning(f"[WS] {key} ошибка: {e}")
+                fail_streak += 1
+                if fail_streak >= 10:
+                    logger.error(f"[WS] {key} {fail_streak} ошибок — стоп")
+                    self.tasks.pop(key, None)
+                    return
+                logger.warning(
+                    f"[WS] {key} ошибка ({fail_streak}/10): {e}")
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, max_backoff)
 
